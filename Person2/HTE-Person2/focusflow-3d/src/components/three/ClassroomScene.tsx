@@ -1,8 +1,14 @@
 "use client";
 
-import { useRef, useState, useMemo } from "react";
+import { useRef, useState, useMemo, useEffect, Suspense } from "react";
 import { Canvas, useFrame } from "@react-three/fiber";
-import { OrbitControls, Text, Float } from "@react-three/drei";
+import {
+  OrbitControls,
+  Text,
+  Float,
+  useGLTF,
+  useAnimations,
+} from "@react-three/drei";
 import * as THREE from "three";
 import { useFocusFlowStore } from "@/store/useFocusFlowStore";
 
@@ -14,47 +20,158 @@ function getMasteryColor(mastery: number): string {
   return "#ef4444"; // red
 }
 
-// ─── Interactive 3D Object ──────────────────────────────────────────────────
+// ─── GLB Classroom Environment ──────────────────────────────────────────────
 
-interface InteractiveObjectProps {
+function ClassroomModel({ dimLevel = 0 }: { dimLevel?: number }) {
+  const { scene } = useGLTF("/models/classroom.glb");
+  const clonedScene = useMemo(() => scene.clone(true), [scene]);
+
+  useEffect(() => {
+    clonedScene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+  }, [clonedScene]);
+
+  const ambientIntensity = 0.6 - dimLevel * 0.3;
+
+  return (
+    <group>
+      <primitive object={clonedScene} scale={1.5} position={[0, -0.5, 0]} />
+      <ambientLight intensity={ambientIntensity} color="#ffeedd" />
+      <directionalLight
+        position={[5, 8, 5]}
+        intensity={0.8 - dimLevel * 0.4}
+        castShadow
+        shadow-mapSize={1024}
+      />
+      <pointLight position={[-3, 3, 2]} intensity={0.4} color="#ffd4a0" />
+    </group>
+  );
+}
+
+// ─── Fallback Room (flat planes if GLB fails) ───────────────────────────────
+
+function FallbackRoom({ dimLevel = 0 }: { dimLevel?: number }) {
+  const ambientIntensity = 0.6 - dimLevel * 0.3;
+  return (
+    <group>
+      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]} receiveShadow>
+        <planeGeometry args={[12, 10]} />
+        <meshStandardMaterial color="#b8a88a" roughness={0.8} />
+      </mesh>
+      <mesh position={[0, 2, -5]} receiveShadow>
+        <planeGeometry args={[12, 5]} />
+        <meshStandardMaterial color="#d4c5a9" roughness={0.9} />
+      </mesh>
+      <mesh position={[-6, 2, 0]} rotation={[0, Math.PI / 2, 0]} receiveShadow>
+        <planeGeometry args={[10, 5]} />
+        <meshStandardMaterial color="#c9bba0" roughness={0.9} />
+      </mesh>
+      <mesh position={[6, 2, 0]} rotation={[0, -Math.PI / 2, 0]} receiveShadow>
+        <planeGeometry args={[10, 5]} />
+        <meshStandardMaterial color="#c9bba0" roughness={0.9} />
+      </mesh>
+      <ambientLight intensity={ambientIntensity} color="#ffeedd" />
+      <directionalLight position={[5, 8, 5]} intensity={0.8 - dimLevel * 0.4} castShadow shadow-mapSize={1024} />
+      <pointLight position={[-3, 3, 2]} intensity={0.4} color="#ffd4a0" />
+    </group>
+  );
+}
+
+// ─── Animated GLB Character ─────────────────────────────────────────────────
+
+function AnimatedCharacter({
+  url,
+  position,
+  scale = 1,
+  rotation = [0, 0, 0],
+}: {
+  url: string;
+  position: [number, number, number];
+  scale?: number;
+  rotation?: [number, number, number];
+}) {
+  const groupRef = useRef<THREE.Group>(null);
+  const { scene, animations } = useGLTF(url);
+  const clonedScene = useMemo(() => scene.clone(true), [scene]);
+  const { actions } = useAnimations(animations, groupRef);
+
+  useEffect(() => {
+    clonedScene.traverse((child) => {
+      if ((child as THREE.Mesh).isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+  }, [clonedScene]);
+
+  // Play the first available animation (idle)
+  useEffect(() => {
+    const actionNames = Object.keys(actions);
+    if (actionNames.length > 0 && actions[actionNames[0]]) {
+      actions[actionNames[0]]!.reset().fadeIn(0.5).play();
+    }
+    return () => {
+      actionNames.forEach((name) => actions[name]?.fadeOut(0.5));
+    };
+  }, [actions]);
+
+  return (
+    <group ref={groupRef} position={position} scale={scale} rotation={rotation}>
+      <primitive object={clonedScene} />
+    </group>
+  );
+}
+
+// ─── Interactive Clickable Hotspot ──────────────────────────────────────────
+
+interface HotspotProps {
   position: [number, number, number];
   size: [number, number, number];
-  color: string;
-  hoverColor?: string;
   label: string;
   panelId: string;
   mastery?: number;
   locked?: boolean;
+  visible?: boolean;
+  color?: string;
+  hoverColor?: string;
 }
 
-function InteractiveObject({
+function Hotspot({
   position,
   size,
-  color,
-  hoverColor,
   label,
   panelId,
   mastery,
   locked = false,
-}: InteractiveObjectProps) {
+  visible = true,
+  color = "#ffffff",
+  hoverColor = "#60a5fa",
+}: HotspotProps) {
   const meshRef = useRef<THREE.Mesh>(null);
   const [hovered, setHovered] = useState(false);
   const setActivePanel = useFocusFlowStore((s) => s.setActivePanel);
 
   const displayColor = useMemo(() => {
-    if (locked) return "#6b7280"; // gray for locked
-    if (hovered) return hoverColor ?? "#60a5fa";
+    if (locked) return "#6b7280";
+    if (hovered) return hoverColor;
     if (mastery !== undefined) return getMasteryColor(mastery);
     return color;
   }, [locked, hovered, hoverColor, mastery, color]);
 
   useFrame((_, delta) => {
     if (!meshRef.current) return;
-    // Gentle float for hovered objects
     if (hovered && !locked) {
       meshRef.current.position.y = position[1] + Math.sin(Date.now() * 0.003) * 0.05;
     } else {
-      meshRef.current.position.y = THREE.MathUtils.lerp(meshRef.current.position.y, position[1], delta * 5);
+      meshRef.current.position.y = THREE.MathUtils.lerp(
+        meshRef.current.position.y,
+        position[1],
+        delta * 5
+      );
     }
   });
 
@@ -88,9 +205,10 @@ function InteractiveObject({
           emissiveIntensity={hovered ? 0.3 : 0}
           roughness={0.4}
           metalness={0.1}
+          transparent={!visible}
+          opacity={visible ? 1 : 0.15}
         />
       </mesh>
-      {/* Label above object */}
       <Text
         position={[position[0], position[1] + size[1] / 2 + 0.3, position[2]]}
         fontSize={0.18}
@@ -102,87 +220,66 @@ function InteractiveObject({
       >
         {locked ? `🔒 ${label}` : label}
       </Text>
-      {/* Mastery indicator dot */}
       {mastery !== undefined && !locked && (
-        <mesh position={[position[0] + size[0] / 2 + 0.15, position[1] + size[1] / 2, position[2]]}>
+        <mesh
+          position={[
+            position[0] + size[0] / 2 + 0.15,
+            position[1] + size[1] / 2,
+            position[2],
+          ]}
+        >
           <sphereGeometry args={[0.08, 16, 16]} />
-          <meshStandardMaterial color={getMasteryColor(mastery)} emissive={getMasteryColor(mastery)} emissiveIntensity={0.5} />
+          <meshStandardMaterial
+            color={getMasteryColor(mastery)}
+            emissive={getMasteryColor(mastery)}
+            emissiveIntensity={0.5}
+          />
         </mesh>
       )}
     </group>
   );
 }
 
-// ─── Room Floor & Walls ─────────────────────────────────────────────────────
+// ─── AI Tutor (Teacher GLB or fallback avatar) ─────────────────────────────
 
-function Room({ dimLevel = 0 }: { dimLevel?: number }) {
-  const ambientIntensity = 0.6 - dimLevel * 0.3;
-  return (
-    <group>
-      {/* Floor */}
-      <mesh rotation={[-Math.PI / 2, 0, 0]} position={[0, -0.5, 0]} receiveShadow>
-        <planeGeometry args={[12, 10]} />
-        <meshStandardMaterial color="#b8a88a" roughness={0.8} />
-      </mesh>
-      {/* Back wall */}
-      <mesh position={[0, 2, -5]} receiveShadow>
-        <planeGeometry args={[12, 5]} />
-        <meshStandardMaterial color="#d4c5a9" roughness={0.9} />
-      </mesh>
-      {/* Left wall */}
-      <mesh position={[-6, 2, 0]} rotation={[0, Math.PI / 2, 0]} receiveShadow>
-        <planeGeometry args={[10, 5]} />
-        <meshStandardMaterial color="#c9bba0" roughness={0.9} />
-      </mesh>
-      {/* Right wall */}
-      <mesh position={[6, 2, 0]} rotation={[0, -Math.PI / 2, 0]} receiveShadow>
-        <planeGeometry args={[10, 5]} />
-        <meshStandardMaterial color="#c9bba0" roughness={0.9} />
-      </mesh>
-      {/* Ambient + directional lighting */}
-      <ambientLight intensity={ambientIntensity} color="#ffeedd" />
-      <directionalLight position={[5, 8, 5]} intensity={0.8 - dimLevel * 0.4} castShadow shadow-mapSize={1024} />
-      <pointLight position={[-3, 3, 2]} intensity={0.4} color="#ffd4a0" />
-    </group>
-  );
-}
-
-// ─── AI Tutor Avatar ────────────────────────────────────────────────────────
-
-function AITutorAvatar() {
+function AITutorCharacter() {
   const setActivePanel = useFocusFlowStore((s) => s.setActivePanel);
   const [hovered, setHovered] = useState(false);
 
   return (
-    <Float speed={2} rotationIntensity={0.2} floatIntensity={0.5}>
+    <Float speed={2} rotationIntensity={0.1} floatIntensity={0.3}>
       <group
-        position={[4, 1.5, -2]}
-        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "pointer"; }}
-        onPointerOut={() => { setHovered(false); document.body.style.cursor = "auto"; }}
-        onClick={(e) => { e.stopPropagation(); setActivePanel("tutor"); }}
+        position={[3.5, -0.5, -2]}
+        onPointerOver={(e) => {
+          e.stopPropagation();
+          setHovered(true);
+          document.body.style.cursor = "pointer";
+        }}
+        onPointerOut={() => {
+          setHovered(false);
+          document.body.style.cursor = "auto";
+        }}
+        onClick={(e) => {
+          e.stopPropagation();
+          setActivePanel("tutor");
+        }}
       >
-        {/* Head */}
-        <mesh position={[0, 0.5, 0]} castShadow>
-          <sphereGeometry args={[0.3, 32, 32]} />
-          <meshStandardMaterial
-            color={hovered ? "#60a5fa" : "#a78bfa"}
-            emissive={hovered ? "#60a5fa" : "#a78bfa"}
-            emissiveIntensity={hovered ? 0.5 : 0.2}
-          />
-        </mesh>
-        {/* Body */}
-        <mesh position={[0, 0, 0]} castShadow>
-          <capsuleGeometry args={[0.2, 0.4, 8, 16]} />
-          <meshStandardMaterial
-            color={hovered ? "#818cf8" : "#7c3aed"}
-            emissive={hovered ? "#818cf8" : "#7c3aed"}
-            emissiveIntensity={hovered ? 0.4 : 0.15}
-          />
-        </mesh>
-        {/* Label */}
+        <AnimatedCharacter
+          url="/models/teacher.glb"
+          position={[0, 0, 0]}
+          scale={0.8}
+          rotation={[0, -Math.PI / 4, 0]}
+        />
+        {/* Glow ring when hovered */}
+        {hovered && (
+          <mesh position={[0, 0.01, 0]} rotation={[-Math.PI / 2, 0, 0]}>
+            <ringGeometry args={[0.5, 0.7, 32]} />
+            <meshBasicMaterial color="#60a5fa" transparent opacity={0.6} side={THREE.DoubleSide} />
+          </mesh>
+        )}
         <Text
-          position={[0, 1.0, 0]}
-          fontSize={0.18}
+          position={[0, 2.2, 0]}
+          fontSize={0.2}
           color="#ffffff"
           anchorX="center"
           outlineWidth={0.02}
@@ -195,6 +292,84 @@ function AITutorAvatar() {
   );
 }
 
+// ─── Fallback AI Tutor (sphere + capsule if GLB fails) ─────────────────────
+
+function FallbackTutor() {
+  const setActivePanel = useFocusFlowStore((s) => s.setActivePanel);
+  const [hovered, setHovered] = useState(false);
+
+  return (
+    <Float speed={2} rotationIntensity={0.2} floatIntensity={0.5}>
+      <group
+        position={[4, 1.5, -2]}
+        onPointerOver={(e) => { e.stopPropagation(); setHovered(true); document.body.style.cursor = "pointer"; }}
+        onPointerOut={() => { setHovered(false); document.body.style.cursor = "auto"; }}
+        onClick={(e) => { e.stopPropagation(); setActivePanel("tutor"); }}
+      >
+        <mesh position={[0, 0.5, 0]} castShadow>
+          <sphereGeometry args={[0.3, 32, 32]} />
+          <meshStandardMaterial
+            color={hovered ? "#60a5fa" : "#a78bfa"}
+            emissive={hovered ? "#60a5fa" : "#a78bfa"}
+            emissiveIntensity={hovered ? 0.5 : 0.2}
+          />
+        </mesh>
+        <mesh position={[0, 0, 0]} castShadow>
+          <capsuleGeometry args={[0.2, 0.4, 8, 16]} />
+          <meshStandardMaterial
+            color={hovered ? "#818cf8" : "#7c3aed"}
+            emissive={hovered ? "#818cf8" : "#7c3aed"}
+            emissiveIntensity={hovered ? 0.4 : 0.15}
+          />
+        </mesh>
+        <Text position={[0, 1.0, 0]} fontSize={0.18} color="#ffffff" anchorX="center" outlineWidth={0.02} outlineColor="#000000">
+          AI Tutor
+        </Text>
+      </group>
+    </Float>
+  );
+}
+
+// ─── Student Character ──────────────────────────────────────────────────────
+
+function StudentCharacter() {
+  return (
+    <AnimatedCharacter
+      url="/models/character.glb"
+      position={[0, -0.5, 1.5]}
+      scale={0.7}
+      rotation={[0, Math.PI, 0]}
+    />
+  );
+}
+
+// ─── Error Boundary Wrapper for GLB Loading ─────────────────────────────────
+
+function GLBWithFallback({
+  children,
+  fallback,
+}: {
+  children: React.ReactNode;
+  fallback: React.ReactNode;
+}) {
+  return <Suspense fallback={fallback}>{children}</Suspense>;
+}
+
+// ─── Loading Indicator ──────────────────────────────────────────────────────
+
+function LoadingSpinner() {
+  const meshRef = useRef<THREE.Mesh>(null);
+  useFrame((_, delta) => {
+    if (meshRef.current) meshRef.current.rotation.y += delta * 2;
+  });
+  return (
+    <mesh ref={meshRef} position={[0, 1, 0]}>
+      <torusGeometry args={[0.5, 0.1, 8, 32]} />
+      <meshBasicMaterial color="#60a5fa" wireframe />
+    </mesh>
+  );
+}
+
 // ─── Main Classroom Scene ───────────────────────────────────────────────────
 
 function ClassroomContent() {
@@ -203,7 +378,6 @@ function ClassroomContent() {
 
   const dimLevel = cogState === "focused" ? 0.4 : cogState === "drifting" ? -0.1 : 0;
 
-  // Average mastery for objects that represent concept areas
   const avgMastery = useMemo(() => {
     const vals = Object.values(learnerState.concepts);
     if (vals.length === 0) return 50;
@@ -212,10 +386,13 @@ function ClassroomContent() {
 
   return (
     <>
-      <Room dimLevel={dimLevel} />
+      {/* 3D Classroom Environment — GLB with flat-plane fallback */}
+      <GLBWithFallback fallback={<FallbackRoom dimLevel={dimLevel} />}>
+        <ClassroomModel dimLevel={dimLevel} />
+      </GLBWithFallback>
 
-      {/* Whiteboard — back wall center */}
-      <InteractiveObject
+      {/* Interactive Hotspots (clickable zones on top of classroom) */}
+      <Hotspot
         position={[0, 1.5, -4.9]}
         size={[3, 1.8, 0.1]}
         color="#f5f5f5"
@@ -223,60 +400,68 @@ function ClassroomContent() {
         label="Whiteboard"
         panelId="whiteboard"
         mastery={avgMastery}
+        visible={false}
       />
 
-      {/* Desk — center of room */}
-      <InteractiveObject
+      <Hotspot
         position={[0, 0.1, 0]}
         size={[2, 0.6, 1.2]}
         color="#8b6f47"
         hoverColor="#a0845c"
         label="Desk"
         panelId="study"
+        visible={false}
       />
 
-      {/* Bookshelf — right wall */}
-      <InteractiveObject
+      <Hotspot
         position={[5.5, 1, -2]}
         size={[0.6, 2, 1.5]}
         color="#654321"
         hoverColor="#7a5630"
         label="Bookshelf"
         panelId="bookshelf"
+        visible={false}
       />
 
-      {/* Lab Bench — left side */}
-      <InteractiveObject
+      <Hotspot
         position={[-4, 0.1, -1]}
         size={[2, 0.7, 1]}
         color="#4a7c59"
         hoverColor="#5a9c6d"
         label="Lab Bench"
         panelId="challenge"
+        visible={false}
       />
 
-      {/* Quiz Board — left wall */}
-      <InteractiveObject
+      <Hotspot
         position={[-5.5, 1.5, 1]}
         size={[0.1, 1.5, 1.5]}
         color="#1e40af"
         hoverColor="#3b82f6"
         label="Quiz Board"
         panelId="quiz"
+        visible={false}
       />
 
-      {/* Window — right wall */}
-      <InteractiveObject
+      <Hotspot
         position={[5.5, 2, 2]}
         size={[0.1, 1.5, 2]}
         color="#87ceeb"
         hoverColor="#bae6fd"
         label="Progress"
         panelId="progress"
+        visible={false}
       />
 
-      {/* AI Tutor — floating avatar */}
-      <AITutorAvatar />
+      {/* AI Tutor — Teacher GLB with fallback avatar */}
+      <GLBWithFallback fallback={<FallbackTutor />}>
+        <AITutorCharacter />
+      </GLBWithFallback>
+
+      {/* Student Character — sitting at desk */}
+      <GLBWithFallback fallback={null}>
+        <StudentCharacter />
+      </GLBWithFallback>
 
       <OrbitControls
         enablePan={false}
@@ -296,7 +481,14 @@ export default function ClassroomScene() {
       camera={{ position: [0, 3, 6], fov: 60 }}
       style={{ background: "linear-gradient(to bottom, #1a1a2e, #16213e)" }}
     >
-      <ClassroomContent />
+      <Suspense fallback={<LoadingSpinner />}>
+        <ClassroomContent />
+      </Suspense>
     </Canvas>
   );
 }
+
+// Preload GLB assets
+useGLTF.preload("/models/classroom.glb");
+useGLTF.preload("/models/teacher.glb");
+useGLTF.preload("/models/character.glb");
