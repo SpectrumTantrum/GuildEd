@@ -22,3 +22,6 @@ dist/
 .DS_Store
 Thumbs.db
 __MACOSX/
+
+# Large 3D asset files (exceed GitHub's 100 MB limit)
+*.obj
