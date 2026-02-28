@@ -1,4 +1,4 @@
-# FocusFlow 3D
+# EDU Oasis
 
 **AI-powered immersive adaptive learning for neurodivergent students**
 
@@ -22,7 +22,7 @@ FocusFlow 3D is an immersive 3D adaptive learning platform designed specifically
 - **Multi-modal explanations** - Visual, analogy, step-by-step, and Socratic modes adapt to each learner's preference
 - **Cognitive-state awareness** - Explicit check-ins + implicit behavioral signals adjust chunk size, difficulty, and room lighting
 
-Built at **HKUST Hackathon 2026** by a 6-person team.
+Built at **HKUST Hackathon 2026** by Team Justice.
 
 ---
 
